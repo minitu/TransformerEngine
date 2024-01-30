@@ -583,7 +583,7 @@ def _update_amax_history(amax_history: torch.Tensor) -> torch.Tensor:
     return amax_history
 
 
-@torch.jit.script
+@jit_fuser
 def _default_get_amax(
     amax_history: torch.Tensor,
     amax_compute_algo: str,
@@ -625,7 +625,7 @@ def _compute_scaling_factor_inverse(
     return torch.where(non_weight_mask, 1.0 / scale, scale_inv)
 
 
-@torch.jit.script
+@jit_fuser
 def _fused_amax_and_scale_update(
     amax_history: torch.Tensor,
     scale: torch.Tensor,
