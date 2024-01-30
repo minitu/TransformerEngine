@@ -708,6 +708,7 @@ def amax_and_scale_update(
     fp8_meta_tensor_key = "scaling_fwd" if fwd_update else "scaling_bwd"
     fp8_max_key = "fp8_max_fwd" if fwd_update else "fp8_max_bwd"
 
+    '''
     if not callable(amax_compute) and sf_compute is None:
         (
             fp8_meta[fp8_meta_tensor_key].amax_history,
@@ -740,3 +741,4 @@ def amax_and_scale_update(
             fp8_meta[fp8_meta_tensor_key + "_non_weight_mask"],
             update_weight_scale_inv,
         )
+    '''
