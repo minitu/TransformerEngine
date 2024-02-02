@@ -793,10 +793,12 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
 
     // Get communication and GEMM output chunk sizes
     const int comm_bytes = _ubufs[0].numel() * _ubufs[0].element_size();
-    const int output_chunk_bytes = (n_chunk * m) * HALF_BYTES;
+    const int output_chunk_bytes = (n_chunk * m) * D.element_size();
+    int aux_chunk_bytes = 0;
 
     // Get output and workspace data pointers
     char *output_ptr = reinterpret_cast<char *>(D.data_ptr());
+    char *pre_gelu_out_ptr = reinterpret_cast<char *>(pre_gelu_out.data_ptr());
     char *workspace_ptr = reinterpret_cast<char *>(workspace.data_ptr());
     int workspace_size_chunk = workspaceSize / _stream_compute.size();
 
@@ -806,10 +808,12 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
     if (B_scale_inverse.numel())
       B_scale_inverse = B_scale_inverse[B_fp8_tensor];
 
+    if (pre_gelu_out.numel())
+      aux_chunk_bytes = (n_chunk * m) * pre_gelu_out.element_size();
+
     at::cuda::CUDAStream stream_main = at::cuda::getDefaultCUDAStream();
     CHECK_CUDA(cudaEventRecord(_start_compute, (cudaStream_t)stream_main));
 
-    assert(pre_gelu_out.numel() == 0);
     if (_aggregate2) {
       // Catch up the default torch stream
       CHECK_CUDA(cudaStreamWaitEvent((cudaStream_t)_stream_send, _start_compute, 0));
@@ -848,6 +852,10 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
             torch::from_blob(input_b_ptr + send_offset, {n_chunk * 2, k}, _ubuf.options());
         torch::Tensor output_chunk = torch::from_blob(
             output_ptr + (send_chunk_id * output_chunk_bytes), {n_chunk * 2, m}, D.options());
+        if (aux_chunk_bytes > 0) {
+          pre_gelu_out = torch::from_blob(
+              pre_gelu_out_ptr + (send_chunk_id + aux_chunk_bytes), {n_chunk * 2, m}, pre_gelu_out.options());
+        }
         torch::Tensor workspace_chunk =
             torch::from_blob(workspace_ptr + (i % _stream_compute.size()) * workspace_size_chunk,
                              {workspace_size_chunk}, workspace.options());
@@ -901,6 +909,10 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
         // GEMM
         torch::Tensor output_chunk = torch::from_blob(
             output_ptr + (send_chunk_id * output_chunk_bytes), {n_chunk, m}, D.options());
+        if (aux_chunk_bytes > 0) {
+          pre_gelu_out = torch::from_blob(
+              pre_gelu_out_ptr + (send_chunk_id + aux_chunk_bytes), {n_chunk * 2, m}, pre_gelu_out.options());
+        }
         torch::Tensor workspace_chunk =
             torch::from_blob(workspace_ptr + (i % _stream_compute.size()) * workspace_size_chunk,
                              {workspace_size_chunk}, workspace.options());
