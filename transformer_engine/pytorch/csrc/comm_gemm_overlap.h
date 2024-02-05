@@ -793,8 +793,9 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
 
     // Get communication and GEMM output chunk sizes
     const int comm_bytes = _ubufs[0].numel() * _ubufs[0].element_size();
-    const int output_chunk_bytes = (n_chunk * m) * D.element_size();
-    int aux_chunk_bytes = 0;
+    const bool do_gelu = pre_gelu_out.numel() > 0;
+    const int output_chunk_bytes = do_gelu ? (n_chunk * m) * D.element_size() : (n_chunk * m) * HALF_SIZE;
+    const int aux_chunk_bytes = do_gelu ? (n_chunk * m) * pre_gelu_out.element_size() : 0;
 
     // Get output and workspace data pointers
     char *output_ptr = reinterpret_cast<char *>(D.data_ptr());
@@ -807,9 +808,6 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
 
     if (B_scale_inverse.numel())
       B_scale_inverse = B_scale_inverse[B_fp8_tensor];
-
-    if (pre_gelu_out.numel())
-      aux_chunk_bytes = (n_chunk * m) * pre_gelu_out.element_size();
 
     at::cuda::CUDAStream stream_main = at::cuda::getDefaultCUDAStream();
     CHECK_CUDA(cudaEventRecord(_start_compute, (cudaStream_t)stream_main));
@@ -852,9 +850,9 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
             torch::from_blob(input_b_ptr + send_offset, {n_chunk * 2, k}, _ubuf.options());
         torch::Tensor output_chunk = torch::from_blob(
             output_ptr + (send_chunk_id * output_chunk_bytes), {n_chunk * 2, m}, D.options());
-        if (aux_chunk_bytes > 0) {
+        if (do_gelu) {
           pre_gelu_out = torch::from_blob(
-              pre_gelu_out_ptr + (send_chunk_id + aux_chunk_bytes), {n_chunk * 2, m}, pre_gelu_out.options());
+              pre_gelu_out_ptr + (send_chunk_id * aux_chunk_bytes), {n_chunk * 2, m}, pre_gelu_out.options());
         }
         torch::Tensor workspace_chunk =
             torch::from_blob(workspace_ptr + (i % _stream_compute.size()) * workspace_size_chunk,
@@ -909,9 +907,9 @@ struct UbufP2PCommOverlap : torch::CustomClassHolder, UbufBase {
         // GEMM
         torch::Tensor output_chunk = torch::from_blob(
             output_ptr + (send_chunk_id * output_chunk_bytes), {n_chunk, m}, D.options());
-        if (aux_chunk_bytes > 0) {
+        if (do_gelu) {
           pre_gelu_out = torch::from_blob(
-              pre_gelu_out_ptr + (send_chunk_id + aux_chunk_bytes), {n_chunk * 2, m}, pre_gelu_out.options());
+              pre_gelu_out_ptr + (send_chunk_id * aux_chunk_bytes), {n_chunk, m}, pre_gelu_out.options());
         }
         torch::Tensor workspace_chunk =
             torch::from_blob(workspace_ptr + (i % _stream_compute.size()) * workspace_size_chunk,
