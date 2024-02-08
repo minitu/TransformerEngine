@@ -1215,8 +1215,9 @@ class LayerNormMLP(TransformerEngineBaseModule):
             )
 
         if gemm_gelu_fusion:
-            assert ub_split_ag,
-            "GEMM-GELU fusion is currently only supported with split GEMM-AG overlap."
+            assert (
+                ub_split_ag
+            ), "GEMM-GELU fusion is currently only supported with split GEMM-AG overlap."
 
         if tp_group is None:
             self.tp_size = tp_size
