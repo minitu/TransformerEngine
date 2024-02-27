@@ -6,5 +6,6 @@
 from .layernorm_linear import LayerNormLinear
 from .linear import Linear
 from .layernorm_mlp import LayerNormMLP
+from .bda_layernorm_mlp import BDALayerNormMLP
 from .layernorm import LayerNorm
 from .rmsnorm import RMSNorm

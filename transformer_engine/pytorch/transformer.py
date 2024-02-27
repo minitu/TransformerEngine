@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import torch
 
 import transformer_engine_extensions as tex
-from transformer_engine.pytorch.module import LayerNormMLP, LayerNorm, RMSNorm
+from transformer_engine.pytorch.module import LayerNormMLP, BDALayerNormMLP, LayerNorm, RMSNorm
 from transformer_engine.pytorch.attention import (
     InferenceParams,
     MultiheadAttention,
@@ -299,6 +299,7 @@ class TransformerLayer(torch.nn.Module):
             )
 
         bias_dropout_fusion = bool(int(os.getenv("NVTE_BIAS_DROPOUT_FUSION", "1")))
+        self.bias_dropout_add_layernorm_fusion = bool(int(os.getenv("NVTE_BIAS_DROPOUT_LAYERNORM_FUSION", "1")))
         self.layer_number = layer_number
         self.output_layernorm = output_layernorm
         self.layer_type = layer_type
@@ -406,7 +407,8 @@ class TransformerLayer(torch.nn.Module):
         # FC1 is CPL and FC2 is RPL
         # In the case of GLU activation, FC1 handles both
         # Linear layers before the activation
-        self.layernorm_mlp = LayerNormMLP(
+        ln_mlp = BDALayerNormMLP if self.bias_dropout_add_layernorm_fusion else LayerNormMLP
+        self.layernorm_mlp = ln_mlp(
             hidden_size,
             ffn_hidden_size,
             eps=layernorm_epsilon,
@@ -434,6 +436,7 @@ class TransformerLayer(torch.nn.Module):
             activation=activation,
             normalization=normalization,
             device=device,
+            hidden_dropout=hidden_dropout,
         )
 
         self.hidden_dropout = hidden_dropout
@@ -647,41 +650,47 @@ class TransformerLayer(torch.nn.Module):
 
         if self.apply_residual_connection_post_layernorm and not self.output_layernorm:
             attention_output, attention_bias, residual = self_attention_outputs
+        elif not self.parallel_attention_mlp:
+            attention_output, attention_bias = self_attention_outputs
+            residual = hidden_states
+
+        if self.bias_dropout_add_layernorm_fusion and self.layer_type != "decoder":
+            hidden_states, mlp_outputs = self.layernorm_mlp(
+                attention_output, attention_bias, residual, self.drop_path,
+                is_first_microbatch=is_first_microbatch
+            )
+        else:
             hidden_states = self._bias_dropout_add(
                 attention_output, attention_bias, residual, self.drop_path
             )
-        elif not self.parallel_attention_mlp:
-            attention_output, attention_bias = self_attention_outputs
-            hidden_states = self._bias_dropout_add(
-                attention_output, attention_bias, hidden_states, self.drop_path
+
+            # Cross attention.
+            if self.layer_type == "decoder":
+                inter_attention_outputs = self.inter_attention(
+                    hidden_states,
+                    attention_mask=enc_dec_attn_mask,
+                    window_size=window_size,
+                    encoder_output=encoder_output,
+                    is_first_microbatch=is_first_microbatch,
+                    checkpoint_core_attention=checkpoint_core_attention,
+                    core_attention_bias_type=core_attention_bias_type,
+                    core_attention_bias=core_attention_bias,
+                    alibi_slopes=alibi_slopes,
+                    fast_zero_fill=fast_zero_fill,
+                )
+                if self.apply_residual_connection_post_layernorm:
+                    attention_output, attention_bias, residual = inter_attention_outputs
+                else:
+                    attention_output, attention_bias = inter_attention_outputs
+                    residual = hidden_states
+
+                hidden_states = self._bias_dropout_add(attention_output, attention_bias, residual)
+
+            # MLP.
+            mlp_outputs = self.layernorm_mlp(
+                hidden_states, is_first_microbatch=is_first_microbatch
             )
 
-        # Cross attention.
-        if self.layer_type == "decoder":
-            inter_attention_outputs = self.inter_attention(
-                hidden_states,
-                attention_mask=enc_dec_attn_mask,
-                window_size=window_size,
-                encoder_output=encoder_output,
-                is_first_microbatch=is_first_microbatch,
-                checkpoint_core_attention=checkpoint_core_attention,
-                core_attention_bias_type=core_attention_bias_type,
-                core_attention_bias=core_attention_bias,
-                alibi_slopes=alibi_slopes,
-                fast_zero_fill=fast_zero_fill,
-            )
-            if self.apply_residual_connection_post_layernorm:
-                attention_output, attention_bias, residual = inter_attention_outputs
-            else:
-                attention_output, attention_bias = inter_attention_outputs
-                residual = hidden_states
-
-            hidden_states = self._bias_dropout_add(attention_output, attention_bias, residual)
-
-        # MLP.
-        mlp_outputs = self.layernorm_mlp(
-            hidden_states, is_first_microbatch=is_first_microbatch
-        )
         if self.apply_residual_connection_post_layernorm:
             mlp_output, mlp_bias, residual = mlp_outputs
             output = self._bias_dropout_add(mlp_output, mlp_bias, residual, self.drop_path)
