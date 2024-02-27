@@ -108,6 +108,46 @@ layer_norm::FwdFunction & get_fwd_launcher(DType wtype,
     }
 }
 
+layer_norm::BiasAddFwdFunction & get_bias_add_fwd_launcher(DType wtype,
+                                                           DType itype,
+                                                           DType otype,
+                                                           DType ctype,
+                                                           const layer_norm::BiasAddFwdParams &params) {
+    // Look for tuned kernel
+    auto tuned_key = layer_norm::get_key(wtype, itype, otype, ctype, params.cols);
+    auto is_aligned = [](const void *ptr) -> bool {
+      // Assume vectorized memory accesses are <=16B
+      return reinterpret_cast<uintptr_t>(ptr) % 16 == 0;
+    };
+    if (params.rows % 4 == 0
+        && is_aligned(params.x)
+        && is_aligned(params.bias)
+        && is_aligned(params.residual)
+        && is_aligned(params.mu)
+        && is_aligned(params.rs)
+        && is_aligned(params.gamma)
+        && is_aligned(params.beta)
+        && is_aligned(params.z)
+        && is_aligned(params.ba_out)
+        && layer_norm::FWD_TUNED_FUNCS.count(tuned_key) > 0) {
+        return layer_norm::FWD_TUNED_FUNCS.at(tuned_key);
+    }
+
+    // Pick general kernel
+    auto general_key = layer_norm::get_key(wtype, itype, otype, ctype, 0);
+    if (layer_norm::FWD_GENERAL_FUNCS.count(general_key) == 0) {
+        NVTE_ERROR("FWD: Unsupported types.");
+    }
+    auto& general_func_map = layer_norm::FWD_GENERAL_FUNCS.at(general_key);
+    auto func_iter = general_func_map.lower_bound(params.cols);
+    if (func_iter == general_func_map.end()) {
+        // Hidden size is too big, need to use multi-CTA
+        return general_func_map.rbegin()->second;
+    } else {
+        return func_iter->second;
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 layer_norm::BwdFunction & get_bwd_launcher(DType wtype,
@@ -249,6 +289,125 @@ void layernorm_fwd(const Tensor& x,        // BxSxhidden_size
     CheckInputTensor(gamma, "gamma");
     CheckInputTensor(beta, "beta");
 
+    CheckOutputTensor(*z, "z");
+    CheckOutputTensor(*mu, "mu");
+    CheckOutputTensor(*rsigma, "rsigma");
+
+    if ( launch_params.barrier_size > 0 ) {
+        params.workspace = workspace->data.dptr;
+        params.barrier = reinterpret_cast<int*>(barrier->data.dptr);
+    }
+
+    // Clear buffers
+    if ( params.fp8_out ) {
+        cudaMemsetAsync(params.amax, 0,
+                        layer_norm::product(z->amax.shape) *
+                        typeToSize(z->amax.dtype), stream);
+    }
+    if ( launch_params.barrier_size > 0 ) {
+        cudaMemsetAsync(params.barrier, 0,
+                        layer_norm::product(barrier->data.shape) *
+                        typeToSize(barrier->data.dtype), stream);
+    }
+
+    // Launch the kernel.
+    launcher(launch_params, false);
+
+    return;
+}
+
+void bias_add_layernorm_fwd(const Tensor& x,        // BxSxhidden_size
+                            const Tensor& bias,     // hidden_size
+                            const Tensor& residual, // BxSxhidden_size
+                            const Tensor& gamma,    // hidden_size
+                            const Tensor& beta,     // hidden_size
+                            const float epsilon,
+                            Tensor* ba_out,
+                            Tensor* z,
+                            Tensor* mu,
+                            Tensor* rsigma,
+                            cudaStream_t stream,
+                            const int multiprocessorCount,
+                            Tensor* workspace,
+                            Tensor* barrier,
+                            const bool zero_centered_gamma) {
+    const auto itype = x.data.dtype;
+    const auto wtype = gamma.data.dtype;
+    const auto otype = z->data.dtype;
+    const bool fp8_out = is_fp8_dtype(otype);
+    const auto ctype = layer_norm::DType::kFloat32;
+
+    NVTE_CHECK(x.data.shape.size() == 2);
+
+    const size_t rows = x.data.shape[0];
+    const size_t cols = x.data.shape[1];
+    const auto hidden_size = gamma.data.shape[0];
+
+    NVTE_CHECK(gamma.data.shape == beta.data.shape);
+    NVTE_CHECK(hidden_size == cols);
+
+    NVTE_CHECK(epsilon >= 0.f);
+
+    NVTE_CHECK(z->data.shape == x.data.shape);
+
+    NVTE_CHECK(mu->data.shape == std::vector<size_t>{ rows });
+    NVTE_CHECK(mu->data.dtype == ctype);
+
+    NVTE_CHECK(rsigma->data.shape == std::vector<size_t>{ rows });
+    NVTE_CHECK(rsigma->data.dtype == ctype);
+
+    layer_norm::LaunchParams<layer_norm::BiasAddFwdParams> launch_params;
+
+    launch_params.multiprocessorCount = multiprocessorCount;
+    launch_params.stream = stream;
+
+    // Set the kernel runtime parameters.
+    layer_norm::BiasAddFwdParams &params = launch_params.params;
+    params.rows = rows;
+    params.cols = cols;
+    params.x = x.data.dptr;
+    params.mu = mu->data.dptr;
+    params.rs = rsigma->data.dptr;
+    params.gamma = gamma.data.dptr;
+    params.beta = beta.data.dptr;
+    params.z = z->data.dptr;
+    params.epsilon = epsilon;
+    params.amax = z->amax.dptr;
+    params.scale = z->scale.dptr;
+    params.fp8_out = fp8_out;
+    params.zero_centered_gamma = zero_centered_gamma;
+    params.bias = bias.data.dptr;
+    params.residual = residual.data.dptr;
+    params.ba_out = ba_out->data.dptr;
+
+    // Request the kernel launcher.
+    auto launcher = layer_norm::get_bias_add_fwd_launcher(wtype, itype, otype, ctype, params);
+
+    // Query the kernel-specific launch parameters.
+    launcher(launch_params, true);
+    if (workspace->data.dptr == nullptr) {
+        NVTE_CHECK(barrier->data.dptr == nullptr);
+
+        workspace->data.dtype = layer_norm::DType::kByte;
+        if (launch_params.workspace_bytes == 0) {
+            launch_params.workspace_bytes = 1;
+        }
+        workspace->data.shape = { launch_params.workspace_bytes };
+
+        barrier->data.dtype = layer_norm::DType::kInt32;
+        barrier->data.shape = { launch_params.barrier_size };
+
+        return;
+    }
+
+    // Tensor checks are delayed here in order to recover workspace sizes with null data
+    CheckInputTensor(x, "x");
+    CheckInputTensor(bias, "bias");
+    CheckInputTensor(residual, "residual");
+    CheckInputTensor(gamma, "gamma");
+    CheckInputTensor(beta, "beta");
+
+    CheckOutputTensor(*ba_out, "ba_out");
     CheckOutputTensor(*z, "z");
     CheckOutputTensor(*mu, "mu");
     CheckOutputTensor(*rsigma, "rsigma");
@@ -478,6 +637,39 @@ void nvte_layernorm1p_fwd(const NVTETensor x,       // BxSxhidden_size
                 reinterpret_cast<Tensor*>(workspace),
                 reinterpret_cast<Tensor*>(barrier),
                 true);
+}
+
+void nvte_bias_add_layernorm1p_fwd(const NVTETensor x,        // BxSxhidden_size
+                                   const NVTETensor bias,     // hidden_size
+                                   const NVTETensor residual, // BxSxhidden_size
+                                   const NVTETensor gamma,    // hidden_size
+                                   const NVTETensor beta,     // hidden_size
+                                   const float epsilon,
+                                   NVTETensor ba_out,
+                                   NVTETensor z,
+                                   NVTETensor mu,
+                                   NVTETensor rsigma,
+                                   cudaStream_t stream,
+                                   const int multiprocessorCount,
+                                   NVTETensor workspace,
+                                   NVTETensor barrier) {
+  NVTE_API_CALL(nvte_bias_add_layernorm1p_fwd);
+  using namespace transformer_engine;
+  bias_add_layernorm_fwd(*reinterpret_cast<const Tensor*>(x),
+                         *reinterpret_cast<const Tensor*>(bias),
+                         *reinterpret_cast<const Tensor*>(residual),
+                         *reinterpret_cast<const Tensor*>(gamma),
+                         *reinterpret_cast<const Tensor*>(beta),
+                         epsilon,
+                         reinterpret_cast<Tensor*>(ba_out),
+                         reinterpret_cast<Tensor*>(z),
+                         reinterpret_cast<Tensor*>(mu),
+                         reinterpret_cast<Tensor*>(rsigma),
+                         stream,
+                         multiprocessorCount,
+                         reinterpret_cast<Tensor*>(workspace),
+                         reinterpret_cast<Tensor*>(barrier),
+                         true);
 }
 
 void nvte_layernorm1p_bwd(const NVTETensor dz,       // BxSxhidden_size

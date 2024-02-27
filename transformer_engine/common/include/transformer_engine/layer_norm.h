@@ -91,6 +91,21 @@ void nvte_layernorm1p_fwd(const NVTETensor x,
                           NVTETensor workspace,
                           NVTETensor barrier);
 
+void nvte_bias_add_layernorm1p_fwd(const NVTETensor x,
+                                   const NVTETensor bias,
+                                   const NVTETensor residual,
+                                   const NVTETensor gamma,
+                                   const NVTETensor beta,
+                                   const float epsilon,
+                                   NVTETensor ba_out,
+                                   NVTETensor z,
+                                   NVTETensor mu,
+                                   NVTETensor rsigma,
+                                   cudaStream_t stream,
+                                   const int multiprocessorCount,
+                                   NVTETensor workspace,
+                                   NVTETensor barrier);
+
 
 /*! \brief Compute backward of LayerNorm.
  *

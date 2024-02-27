@@ -98,6 +98,21 @@ struct FwdParams : public ParamsBase {
     bool fp8_out;
 };
 
+struct BiasAddFwdParams : public FwdParams {
+    BiasAddFwdParams()
+        : FwdParams()
+        , bias(nullptr)
+        , residual(nullptr)
+        , ba_out(nullptr) {}
+
+    // Additional inputs
+    void *bias;
+    void *residual;
+
+    // Bias-Add output
+    void *ba_out;
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct BwdParams : public ParamsBase {
