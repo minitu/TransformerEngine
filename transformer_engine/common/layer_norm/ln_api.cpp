@@ -39,6 +39,7 @@ using namespace transformer_engine;
 // Create registries and provide runtime versions of config hash functions.
 
 FwdTunedRegistry FWD_TUNED_FUNCS;
+BiasAddFwdTunedRegistry BIAS_ADD_FWD_TUNED_FUNCS;
 BwdTunedRegistry BWD_TUNED_FUNCS;
 FwdGeneralRegistry FWD_GENERAL_FUNCS;
 BwdGeneralRegistry BWD_GENERAL_FUNCS;
@@ -119,6 +120,7 @@ layer_norm::BiasAddFwdFunction & get_bias_add_fwd_launcher(DType wtype,
       // Assume vectorized memory accesses are <=16B
       return reinterpret_cast<uintptr_t>(ptr) % 16 == 0;
     };
+    /*
     if (params.rows % 4 == 0
         && is_aligned(params.x)
         && is_aligned(params.bias)
@@ -129,10 +131,13 @@ layer_norm::BiasAddFwdFunction & get_bias_add_fwd_launcher(DType wtype,
         && is_aligned(params.beta)
         && is_aligned(params.z)
         && is_aligned(params.ba_out)
-        && layer_norm::FWD_TUNED_FUNCS.count(tuned_key) > 0) {
-        return layer_norm::FWD_TUNED_FUNCS.at(tuned_key);
+        && layer_norm::BIAS_ADD_FWD_TUNED_FUNCS.count(tuned_key) > 0) {
+        return layer_norm::BIAS_ADD_FWD_TUNED_FUNCS.at(tuned_key);
     }
+    */
+    return layer_norm::BIAS_ADD_FWD_TUNED_FUNCS.at(tuned_key);
 
+    /*
     // Pick general kernel
     auto general_key = layer_norm::get_key(wtype, itype, otype, ctype, 0);
     if (layer_norm::FWD_GENERAL_FUNCS.count(general_key) == 0) {
@@ -146,6 +151,7 @@ layer_norm::BiasAddFwdFunction & get_bias_add_fwd_launcher(DType wtype,
     } else {
         return func_iter->second;
     }
+    */
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

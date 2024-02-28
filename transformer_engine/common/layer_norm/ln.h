@@ -142,14 +142,17 @@ struct BwdParams : public ParamsBase {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 using FwdFunction = std::function<void(LaunchParams<FwdParams>&, const bool)>;
+using BiasAddFwdFunction = std::function<void(LaunchParams<BiasAddFwdParams>&, const bool)>;
 using BwdFunction = std::function<void(LaunchParams<BwdParams>&, const bool)>;
 using FunctionKey = uint64_t;
 using FwdTunedRegistry = std::unordered_map<FunctionKey, FwdFunction>;
+using BiasAddFwdTunedRegistry = std::unordered_map<FunctionKey, BiasAddFwdFunction>;
 using BwdTunedRegistry = std::unordered_map<FunctionKey, BwdFunction>;
 using FwdGeneralRegistry = std::unordered_map<FunctionKey, std::map<uint64_t, FwdFunction>>;
 using BwdGeneralRegistry = std::unordered_map<FunctionKey, std::map<uint64_t, BwdFunction>>;
 
 extern FwdTunedRegistry FWD_TUNED_FUNCS;
+extern BiasAddFwdTunedRegistry BIAS_ADD_FWD_TUNED_FUNCS;
 extern BwdTunedRegistry BWD_TUNED_FUNCS;
 extern FwdGeneralRegistry FWD_GENERAL_FUNCS;
 extern BwdGeneralRegistry BWD_GENERAL_FUNCS;
@@ -217,6 +220,15 @@ struct FwdTunedRegistrar{
         FWD_TUNED_FUNCS.insert({ key, f });
     }
 };
+
+template<typename W, typename I, typename O, typename C, uint64_t HIDDEN_SIZE>
+struct BiasAddFwdTunedRegistrar{
+    explicit BiasAddFwdTunedRegistrar(BiasAddFwdFunction f){
+        uint64_t key = Types2Key<W, I, O, C>::get(HIDDEN_SIZE);
+        BIAS_ADD_FWD_TUNED_FUNCS.insert({ key, f });
+    }
+};
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
