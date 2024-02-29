@@ -96,6 +96,36 @@ def _apply_normalization(inputmat:torch.Tensor,
         output = (ln_out, output[1], output[2])
     return output
 
+def _apply_bias_add_norm(inputmat:torch.Tensor,
+                         bda_bias: torch.Tensor,
+                         bda_residual: torch.Tensor,
+                         bda_out: torch.Tensor,
+                         ln_out: torch.Tensor,
+                         ln_weight: torch.Tensor,
+                         ln_bias: Union[torch.Tensor, None],
+                         eps: float,
+                         fp8_out: bool,
+                         fp8_meta: Dict[str, Any],
+                         normalization: str,
+                         fwd_ln_sm_margin: int,
+                         zero_centered_gamma: bool,
+                         is_grad_enabled: bool):
+    normalization_func = tex.bias_add_layernorm_fwd_fp8
+
+    inputs = (inputmat, bda_bias, bda_residual, ln_weight, ln_bias)
+    fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
+    output_kwarg = {"bda_out": bda_out, "ln_out": ln_out}
+    output = normalization_func(
+        *inputs,
+        eps,
+        fp8_meta["scaling_fwd"],
+        tex.FP8FwdTensors.GEMM1_INPUT,
+        fp8_dtype_forward,
+        fwd_ln_sm_margin,
+        zero_centered_gamma,
+        **output_kwarg,
+    )
+    return (bda_out, ln_out, output[1], output[2])
 
 class _NoopCatFunc(torch.autograd.Function):
     """No-op concatenate tensors along dim 0

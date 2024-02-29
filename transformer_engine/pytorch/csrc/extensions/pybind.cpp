@@ -33,6 +33,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // Other granular functions
   m.def("layernorm_fwd_fp8", &layernorm_fwd_fp8, "LN FWD FP8");
   m.def("layernorm_fwd_fp8_noalloc", &layernorm_fwd_fp8_noalloc, "LN FWD FP8");
+  m.def("bias_add_layernorm_fwd_fp8_noalloc", &bias_add_layernorm_fwd_fp8_noalloc, "Bias-Add-LN FWD FP8");
   m.def("layernorm_bwd", &layernorm_bwd, "LN BWD");
   m.def("layernorm_fwd", &layernorm_fwd, "LN FWD");
   m.def("layernorm_fwd_noalloc", &layernorm_fwd_noalloc, "LN FWD");

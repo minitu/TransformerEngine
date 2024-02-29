@@ -146,6 +146,76 @@ std::vector<at::Tensor> layernorm_fwd_fp8_noalloc(const at::Tensor &input,
 }
 
 
+std::vector<at::Tensor> bias_add_layernorm_fwd_fp8_noalloc(const at::Tensor &input,
+                                                  const at::Tensor &bda_bias,
+                                                  const at::Tensor &bda_residual,
+                                                  const at::Tensor &weight,
+                                                  const at::Tensor &bias,
+                                                  float eps,
+                                                  at::Tensor scale,
+                                                  at::Tensor bda_out,
+                                                  at::Tensor ln_out,
+                                                  at::Tensor amax,
+                                                  at::Tensor scale_inv,
+                                                  transformer_engine::DType otype,
+                                                  const int sm_margin,
+                                                  const bool zero_centered_gamma
+) {
+    using namespace transformer_engine;
+
+    size_t N = static_cast<size_t>(input.size(0));
+    size_t H = static_cast<size_t>(input.size(1));
+
+    DType itype = GetTransformerEngineDType(input.scalar_type());
+
+    auto mu = at::empty({static_cast<int64_t>(N)}, at::CUDA(at::kFloat));
+    auto rsigma = at::empty({static_cast<int64_t>(N)}, at::CUDA(at::kFloat));
+    auto input_cu     = makeTransformerEngineTensor(input);
+    auto bias_cu      = makeTransformerEngineTensor(bda_bias);
+    auto residual_cu  = makeTransformerEngineTensor(bda_residual);
+    auto gamma_cu     = makeTransformerEngineTensor(weight);
+    auto beta_cu      = makeTransformerEngineTensor(bias);
+    auto ba_out_cu    = makeTransformerEngineTensor(bda_out);
+    auto z_cu         = makeTransformerEngineTensor(ln_out.data_ptr(), {N, H}, otype,
+                                                    getDataPtr(amax), getDataPtr(scale),
+                                                    getDataPtr(scale_inv));
+    auto mu_cu        = makeTransformerEngineTensor(mu);
+    auto rsigma_cu    = makeTransformerEngineTensor(rsigma);
+    transformer_engine::TensorWrapper workspace, barrier;
+
+    // This call populates workspace and barrier tensors with the required config
+    //const auto func = zero_centered_gamma ? nvte_layernorm1p_fwd : nvte_layernorm_fwd;
+    const auto func = nvte_bias_add_layernorm1p_fwd;
+    func(input_cu.data(), bias_cu.data(), residual_cu.data(),
+         gamma_cu.data(), beta_cu.data(), eps, ba_out_cu.data(), z_cu.data(),
+         mu_cu.data(), rsigma_cu.data(), at::cuda::getCurrentCUDAStream(),
+         at::cuda::getCurrentDeviceProperties()->multiProcessorCount - sm_margin,
+         workspace.data(), barrier.data());
+
+    // Fill workspace and barrier
+    auto workspace_data = allocateSpace(workspace.shape(),
+                                        workspace.dtype());
+    auto barrier_data = allocateSpace(barrier.shape(),
+                                      barrier.dtype(),
+                                      true);
+    workspace = makeTransformerEngineTensor(workspace_data.data_ptr(),
+                                            workspace.shape(),
+                                            workspace.dtype());
+    barrier   = makeTransformerEngineTensor(barrier_data.data_ptr(),
+                                            barrier.shape(),
+                                            barrier.dtype());
+
+    // Actual call to fwd kernel
+    func(input_cu.data(), bias_cu.data(), residual_cu.data(),
+         gamma_cu.data(), beta_cu.data(), eps, ba_out_cu.data(), z_cu.data(),
+         mu_cu.data(), rsigma_cu.data(), at::cuda::getCurrentCUDAStream(),
+         at::cuda::getCurrentDeviceProperties()->multiProcessorCount - sm_margin,
+         workspace.data(), barrier.data());
+
+    return {bda_out, ln_out, mu, rsigma};
+}
+
+
 at::Tensor layernorm_fwd_fp8_inf(const at::Tensor &input,
                                  const at::Tensor &weight,
                                  const at::Tensor &bias,

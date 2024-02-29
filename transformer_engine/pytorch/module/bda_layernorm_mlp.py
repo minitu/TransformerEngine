@@ -56,7 +56,7 @@ from ..constants import dist_group_type, TE_DType
 from ..jit import no_torch_dynamo
 
 from ..float8_tensor import Float8Tensor
-from ._common import _apply_normalization
+from ._common import _apply_normalization, _apply_bias_add_norm
 
 __all__ = ["LayerNormMLP"]
 
@@ -84,6 +84,8 @@ class _LayerNormMLP(torch.autograd.Function):
     def forward(
         ctx,
         inp: torch.Tensor,
+        bda_bias: torch.Tensor,
+        bda_residual: torch.Tensor,
         ln_weight: torch.Tensor,
         ln_bias: torch.Tensor,
         fc1_weight: torch.Tensor,
@@ -167,7 +169,12 @@ class _LayerNormMLP(torch.autograd.Function):
 
         fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
 
-        ln_out, mu, rsigma = _apply_normalization(inputmat,
+        bda_out = torch.empty_like(inputmat, dtype=inputmat.dtype)
+
+        bda_out, ln_out, mu, rsigma = _apply_bias_add_norm(inputmat,
+                                                  bda_bias,
+                                                  bda_residual,
+                                                  bda_out,
                                                   ln_out,
                                                   ln_weight,
                                                   ln_bias,
@@ -530,7 +537,7 @@ class _LayerNormMLP(torch.autograd.Function):
 
         if return_layernorm_output:
             return fc2_out, ln_out_return.view_as(inp)
-        return fc2_out
+        return bda_out, fc2_out
 
 
     @staticmethod
@@ -1021,6 +1028,8 @@ class _LayerNormMLP(torch.autograd.Function):
 
         return (
             dgrad.view(ctx.inp_shape) if ctx.requires_dgrad else None,
+            None, # TODO: bda_bias grad
+            None, # TODO: bda_residual grad
             dgamma,
             dbeta,
             fc1_wgrad,
@@ -1397,6 +1406,7 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
 
         return fp8_weight_tensors
 
+    '''
     def forward(
         self,
         attention_output: torch.Tensor,
@@ -1410,11 +1420,15 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
         )
 
         return hidden_states, self.forward_ln(hidden_states, is_first_microbatch)
+    '''
 
     @no_torch_dynamo()
-    def forward_ln(
+    def forward(
         self,
-        inp: torch.Tensor,
+        attention_output: torch.Tensor,
+        attention_bias: torch.Tensor,
+        residual: torch.Tensor,
+        drop_path: Union[torch.nn.Module, None],
         is_first_microbatch: Optional[bool] = None
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         """
@@ -1439,7 +1453,7 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
                                produced)
         """
 
-        with self.prepare_forward(inp, is_first_microbatch, num_gemms=2) as inp:
+        with self.prepare_forward(attention_output, is_first_microbatch, num_gemms=2) as attention_output:
             assert self.fp8 or not self.primary_weights_in_fp8, \
                    "Need to run inside fp8_autocast region when weights are stored in FP8."
             # Fetch the fp8 weights placeholders (for linear/gemm)
@@ -1457,7 +1471,9 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
                 fwd_fn = _LayerNormMLP.forward
                 args = [None]
             args += (
-                inp,
+                attention_output,
+                attention_bias,
+                residual,
                 self.layer_norm_weight,
                 self.layer_norm_bias,
                 self.fc1_weight,

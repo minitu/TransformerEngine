@@ -13,7 +13,8 @@ __all__ = ['layernorm_fwd_fp8',
            'layernorm_fwd_inf',
            'rmsnorm_fwd_fp8',
            'rmsnorm_fwd_fp8_inf',
-           'rmsnorm_fwd_inf']
+           'rmsnorm_fwd_inf',
+           'bias_add_layernorm_fwd_fp8']
 
 
 def layernorm_fwd_fp8(
@@ -181,4 +182,37 @@ def rmsnorm_fwd_inf(
         weight,
         eps,
         zero_centered_gamma,
+    )
+
+def bias_add_layernorm_fwd_fp8(
+    inp: torch.Tensor,
+    bda_bias: torch.Tensor,
+    bda_residual: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    fp8_meta_tensor: tex.FP8TensorMeta,
+    fp8_tensor: Union[tex.FP8FwdTensors, tex.FP8BwdTensors],
+    otype: tex.DType,
+    sm_margin: int,
+    zero_centered_gamma: bool,
+    bda_out: Optional[torch.Tensor] = None,
+    ln_out: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """LayerNorm with FP8 output"""
+    return tex.bias_add_layernorm_fwd_fp8_noalloc(
+        inp,
+        bda_bias,
+        bda_residual,
+        weight,
+        bias,
+        eps,
+        fp8_meta_tensor.scale[fp8_tensor],
+        bda_out,
+        ln_out,
+        fp8_meta_tensor.amax_history[0][fp8_tensor],
+        fp8_meta_tensor.scale_inv[fp8_tensor],
+        otype,
+        sm_margin,
+        zero_centered_gamma
     )
