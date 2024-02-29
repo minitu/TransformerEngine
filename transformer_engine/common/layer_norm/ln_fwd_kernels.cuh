@@ -205,7 +205,7 @@ void bias_add_ln_fwd_tuned_kernel(BiasAddFwdParams params) {
     for ( int row = r; row < params.rows; row += params.ctas_per_col * ROWS_PER_CTA ) {
         Ivec x[LDGS];
         Ivec residual[LDGS];
-        Ovec ba_out[LDGS];
+        Ivec ba_out[LDGS];
         index_t idx = row * Ktraits::VEC_COLS + c;
         compute_t xf[LDGS * NUM_ELTS];
         #pragma unroll
