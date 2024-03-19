@@ -536,7 +536,7 @@ class _LayerNormMLP(torch.autograd.Function):
         fc2_out = fc2_out.view(-1, *inp.shape[1:-1], fc2_out.shape[-1])
 
         if return_layernorm_output:
-            return fc2_out, ln_out_return.view_as(inp)
+            return bda_out, fc2_out, ln_out_return.view_as(inp)
         return bda_out, fc2_out
 
 
@@ -1516,7 +1516,7 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
                 self.ub_atomic_gemm_ag,
                 self.gemm_gelu_fusion,
             )
-            out = fwd_fn(*args)
+            bda_out, out = fwd_fn(*args)
 
         if self.return_layernorm_output:
             out, ln_out = out
@@ -1526,11 +1526,11 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
 
         if self.return_bias:
             if self.return_layernorm_output:
-                return out, cast_if_needed(self.fc2_bias, self.activation_dtype), ln_out
-            return out, cast_if_needed(self.fc2_bias, self.activation_dtype)
+                return bda_out, out, cast_if_needed(self.fc2_bias, self.activation_dtype), ln_out
+            return bda_out, out, cast_if_needed(self.fc2_bias, self.activation_dtype)
         if self.return_layernorm_output:
-            return out, ln_out
-        return out
+            return bda_out, out, ln_out
+        return bda_out, out
 
     def _bias_dropout_add(self, hidden_state, bias, residual, drop_path=None):
         if drop_path is None and bias.numel() != 0:
