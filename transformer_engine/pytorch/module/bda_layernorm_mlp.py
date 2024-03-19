@@ -27,10 +27,6 @@ from ..jit import (
     bgrad_dgelu_fused,
     set_jit_fusion_options,
     warmup_jit_bias_gelu_all_dtypes,
-    warmup_jit_bias_dropout_add_all_dtypes,
-    get_bias_dropout_add,
-    bias_dropout_add_fused_train,
-    bias_dropout_add_fused_inference,
 )
 from ..utils import (
     divide,
@@ -1224,9 +1220,6 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
         TORCH_MAJOR = int(torch.__version__.split(".")[0])
         TORCH_MINOR = int(torch.__version__.split(".")[1])
         use_nvfuser = TORCH_MAJOR > 1 or (TORCH_MAJOR == 1 and TORCH_MINOR >= 10)
-        self.bias_dropout_add_exec_handler = (
-            nullcontext if use_nvfuser else torch.enable_grad
-        )
         # TODO: Need fusion warmup
 
         if (ub_bulk_wgrad # pylint: disable=too-many-boolean-expressions
@@ -1406,22 +1399,6 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
 
         return fp8_weight_tensors
 
-    '''
-    def forward(
-        self,
-        attention_output: torch.Tensor,
-        attention_bias: torch.Tensor,
-        residual: torch.Tensor,
-        drop_path: Union[torch.nn.Module, None],
-        is_first_microbatch: Optional[bool] = None
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
-        hidden_states = self._bias_dropout_add(
-            attention_output, attention_bias, residual, drop_path
-        )
-
-        return hidden_states, self.forward_ln(hidden_states, is_first_microbatch)
-    '''
-
     @no_torch_dynamo()
     def forward(
         self,
@@ -1531,29 +1508,3 @@ class BDALayerNormMLP(TransformerEngineBaseModule):
         if self.return_layernorm_output:
             return bda_out, out, ln_out
         return bda_out, out
-
-    def _bias_dropout_add(self, hidden_state, bias, residual, drop_path=None):
-        if drop_path is None and bias.numel() != 0:
-            if self.bias_dropout_fusion:
-                if self.training:
-                    bias_dropout_add_func = bias_dropout_add_fused_train
-                else:
-                    bias_dropout_add_func = bias_dropout_add_fused_inference
-            else:
-                bias_dropout_add_func = get_bias_dropout_add(self.training)
-
-            with self.bias_dropout_add_exec_handler():
-                output = bias_dropout_add_func(
-                    hidden_state, bias, residual, self.hidden_dropout
-                )
-        else:
-            if bias.numel() != 0:
-                hidden_state = hidden_state + bias
-            out = torch.nn.functional.dropout(
-                hidden_state, p=self.hidden_dropout, training=self.training
-            )
-            if drop_path is not None:
-                out = drop_path(out)
-            output = residual + out
-
-        return output
