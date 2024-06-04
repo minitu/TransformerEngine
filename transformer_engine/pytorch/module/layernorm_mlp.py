@@ -1239,10 +1239,10 @@ class LayerNormMLP(TransformerEngineBaseModule):
         self.ub_overlap_rs_dgrad = ub_overlap_rs_dgrad
         self.ub_overlap_rs = ub_overlap_rs
         self.ub_overlap_ag = ub_overlap_ag
-        # GEMM-GELU fusion is currently only supported with split GEMM-AG overlap
+        # GEMM-GELU fusion is currently only supported with FP8 GEMMs and AG overlap
         self.gemm_gelu_fusion = \
             (bool(int(os.getenv("NVTE_GEMM_GELU_FUSION", "0"))) and
-            self.activation == 'gelu' and not get_ub("fc1_fprop").is_atomic_gemm())
+            self.activation == 'gelu' and self.fp8 and self.ub_overlap_ag)
 
         if any([ub_bulk_wgrad, ub_bulk_dgrad, ub_overlap_rs, ub_overlap_ag, ub_overlap_rs_dgrad]):
             assert (
