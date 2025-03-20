@@ -7,6 +7,7 @@ from __future__ import annotations
 import functools
 import math
 import os
+import re
 from typing import Any, Callable, List, Optional, Tuple
 
 import torch
@@ -386,3 +387,24 @@ def nvtx_range_pop(msg: Optional[str] = None) -> None:
 
     # Pop NVTX range
     torch.cuda.nvtx.range_pop()
+
+
+@functools.lru_cache(maxsize=None)
+def extract_module_args(module_str: str) -> str:
+    """Extract module arguments as string representation
+
+    Extracts any arguments in the format "argument=value" from the input string,
+    where:
+    - argument names can contain letters, numbers, underscores, and dashes
+    - values can contain:
+        - letters, numbers, underscores, and dashes
+        - decimal points and scientific notation (e.g., 0.001, 1e-5)
+        - plus/minus signs for numbers
+    Returns them as a comma-separated string.
+    """
+    pattern = r'([a-zA-Z0-9_-]+)=([-+]?[a-zA-Z0-9_.-]+(?:[eE][-+]?\d+)?)'
+    matches = re.findall(pattern, module_str)
+
+    if matches:
+        return ','.join(f"{arg}={val}" for arg, val in matches)
+    return ""

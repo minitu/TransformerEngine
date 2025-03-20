@@ -34,6 +34,7 @@ from ..utils import (
     nvtx_range_pop,
     nvtx_range_push,
     requires_grad,
+    extract_module_args,
 )
 from ..distributed import (
     set_tensor_model_parallel_attributes,
@@ -109,7 +110,7 @@ class _LayerNormLinear(torch.autograd.Function):
         ub_overlap_rs_dgrad: bool,
         ub_bulk_wgrad: bool,
         ub_bulk_dgrad: bool,
-        ub_name: str,
+        ub_name: Union[str, None],
         fsdp_group: Union[dist_group_type, None],
         module: torch.nn.Module,
         skip_fp8_weight_update: bool,
@@ -120,6 +121,8 @@ class _LayerNormLinear(torch.autograd.Function):
         nvtx_label = "transformer_engine._LayerNormLinear.forward"
         if ub_name is not None:
             nvtx_label = f"{nvtx_label}.{ub_name}"
+        else:
+            nvtx_label = f"{nvtx_label}({extract_module_args(str(module))})"
 
         # Make sure input dimensions are compatible
         out_features, in_features = weight.shape
