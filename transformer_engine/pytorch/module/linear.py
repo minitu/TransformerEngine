@@ -111,7 +111,8 @@ class _Linear(torch.autograd.Function):
         if ub_name is not None:
             nvtx_label = f"{nvtx_label}.{ub_name}"
         else:
-            nvtx_label = f"{nvtx_label}({extract_module_args(str(module))})"
+            module_args = extract_module_args(str(module))
+            nvtx_label = f"{nvtx_label}({module_args})"
 
         # Make sure input dimensions are compatible
         out_features, in_features = weight.shape
@@ -348,6 +349,8 @@ class _Linear(torch.autograd.Function):
                 ctx.reduce_and_update_bwd_fp8_tensors = FP8GlobalStateManager.is_first_fp8_module()
                 if in_fp8_activation_recompute_phase():
                     FP8GlobalStateManager.IS_FIRST_FP8_MODULE = _first_fp8_module
+            if ub_name is None:
+                ctx.module_args = module_args
 
         # Row Parallel Linear
         if ub_overlap_rs_fprop:
@@ -371,6 +374,8 @@ class _Linear(torch.autograd.Function):
         nvtx_label = "transformer_engine._Linear.backward"
         if ctx.ub_name is not None:
             nvtx_label = f"{nvtx_label}.{ctx.ub_name}"
+        else:
+            nvtx_label = f"{nvtx_label}({ctx.module_args})"
 
         with torch.cuda.nvtx.range("_Linear_backward"):
             if (
